@@ -4,7 +4,8 @@ CFLAGS =	-g -O
 FC =		gfortran
 FFLAGS =	-g -O
 
-BINDIR =	${HOME}/bin
+#BINDIR =	${HOME}/bin
+BINDIR =	../../bin
 
 BINARIES =	rmdash \
 		fmt56

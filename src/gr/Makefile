@@ -4,7 +4,8 @@ CFLAGS =	-g -O2
 FC =		gfortran
 FFLAGS =	-g -O2
 
-BINDIR =	${HOME}/bin
+#BINDIR =	${HOME}/bin
+BINDIR =	../../bin
 
 BINARIES =	gr2ffb
 

@@ -6,7 +6,8 @@ FFLAGS =	-g -O2
 
 LIBS = -lm
 
-BINDIR =	${HOME}/bin
+#BINDIR =	${HOME}/bin
+BINDIR =	../../bin
 
 BINARIES =	iss2isc \
 		fixisc \
