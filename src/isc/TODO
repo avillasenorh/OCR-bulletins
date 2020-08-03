@@ -1,0 +1,31 @@
+iss2isc (main)
+
+- make options work (leave some for other codes??
+
+- geographic region (combine FORTRAN with C)
+
+r_iss_epic.c
+
+- lat and lon accuracy (fixed to 0.1 degree? and 0.01 degree for 1956?)
+- focal depth accuracy (fixed to 1 km?)
+- comments in epicenter line
+
+Other codes:
+-----------
+
+fix_isc_cards:
+
+- produce a report with changes
+- options: -P prompt
+           -N nodata
+
+record format 1:
+
+. fix geographic and seismic region
+. fix number of stations
+
+
+all formats:
+
+. verify next format
+. -1 code at end of file

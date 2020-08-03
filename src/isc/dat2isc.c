@@ -1,0 +1,592 @@
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*******************************************************************************
+Program: dat2isc.c
+
+Purpose: Reads text files 
+  convert to ISC 96-byte format
+
+Author:	Antonio Villasenor, USGS, Golden
+
+Date:	14-MAR-1999
+*******************************************************************************/
+
+/* maximum filename length */
+#ifndef FILENAME_MAX
+#define FILENAME_MAX 1024
+#endif
+
+#define NINT(x) (int)floor((x)+0.5)
+
+#define INT_UNDEF -12345
+#define FLT_UNDEF -12345.0
+
+#define MAXLINE	97
+#define MAXPHASES 5
+#define MAXCARDS 2000
+#define MAXSTA 1000
+#define TRUE	1
+#define FALSE	0
+
+struct itm {
+	int	year;
+	int	month;
+	int	day;
+	int	hour;
+	int	minute;
+	int	second;
+	int	millisecond;
+};
+
+struct itm iaddsec1(struct itm RefTime, int dt);
+
+int get_hypo(char *line, int *month, int *day, int *hour, int *minute,
+             int *second, float *lat, float *lon, float *depth);
+int get_phases(char *line, char *stnm, float *delta, float *azim,
+		int *Pmin, int *Psec, int *Pres, int *Ppol,
+		int *Smin, int *Ssec, int *Sres,
+		int *pPmin, int *pPsec,
+		int *Suppmin, int *Suppsec, char *Supp);
+void asterisk(char *phase);
+int trim(char s[]);
+int phase_code2(char *phase);
+void lookup_(float *ALAT, char *DRCLAT, float *ALNG, char *DRCLNG, int *IGREG, int *ISREG);
+
+int main(int argc, char *argv[])
+{
+	struct itm	OriginTime, PTime, STime, pPTime, SuppTime;
+	struct itm	PhaseTime[MAXPHASES];
+
+	FILE	*fpdat, *fpisc, *fpheq, *fpsta;
+
+	char	datfile[FILENAME_MAX];
+	char	iscfile[FILENAME_MAX];
+
+	char	line[MAXLINE+1];
+	char	*card[MAXCARDS];
+
+	int	icard = 0;
+
+	char	*sta_name[MAXSTA];
+	char	*sta_code[MAXSTA];
+
+	int	nsta = 0;
+	int	ist;
+
+	int	yr, mo, dy;
+	int	year, month, day, hour, minute, second;
+	float	lat, lon, depth;
+	float	rdepth;		/* depth of focus (fraction of Earth radius) */
+	float	a, b, c, d, e;
+	float	g, h, k, ht;
+	float	se;		/* standard error (seconds) (RMS?) */
+
+	float	mag = 0.0;
+	int	imag = 0;
+	int	ntel = 0;
+	float	iscdepth;
+	int	ndep;
+
+	int	igreg, isreg;
+
+	char	stnm[32];
+	float	delta, azim;
+	int	Pmin, Psec, Pres, Ppol;
+	int	Smin, Ssec, Sres;
+	int	pPmin, pPsec;
+	int	Suppmin, Suppsec;
+	char	Supp[16];
+
+	int	dt;
+
+/*
+	int	rday[MAXPHASE], rhour[MAXPHASE];
+	int	rmin[MAXPHASE], rsec[MAXPHASE];
+*/
+	int	res[MAXPHASES];
+	int	op_id[MAXPHASES];
+	char	phase[MAXPHASES][9];
+	char	pol[MAXPHASES];
+
+	char	ord;
+	int	lineno, evno;
+
+	char	evname[8];
+
+	char	csta[5];
+
+	int	irf, inrf;
+	int	ips = 0;
+
+	int	icode;
+
+	int	header = FALSE;	/* true while reading hypocenter header.  False otherwise */
+
+	int	neq = 0;	/* number of events in data file */
+	int	nobs = 0;	/* number of observations (stations) in current event */
+
+	int	lcomments = FALSE;
+	int	verbose = FALSE;
+	int	infile = FALSE;
+
+	int	i;
+
+	/* Decode flag options */
+
+	for (i = 1; i < argc; i++) {
+		if (argv[i][0] == '-') {
+			switch (argv[i][1]) {
+				case 'C':
+					lcomments = TRUE;
+					break;
+				case 'V':
+					verbose = TRUE;
+					break;
+				default:
+					break;
+			}
+		} else {
+			if ((fpdat = fopen(argv[i], "r")) == NULL) {
+				fprintf(stderr, "Error in dat2isc: ");
+				fprintf(stderr, "cannot open %s \n", argv[i]);
+				return 1;
+			} else {
+				strcpy(datfile,argv[i]);
+				infile = TRUE;
+			}
+		}
+	}
+
+	if (! infile) {
+		/* read from standard input */
+		fpdat = stdin;
+	} else {
+		if (verbose) {
+			fprintf(stderr, "dat2isc: ");
+			fprintf(stderr, "processing file %s\n", datfile);
+		}
+	}
+	/* initialize arrays */
+
+	for (i = 0; i < MAXCARDS; i++) {
+		card[i] = (char *)malloc(MAXLINE);
+		if (card[i] != NULL) {
+			card[i][0] = '\0';
+		} else {
+			fprintf(stderr, "Cannot allocate memory for card[]\n");
+			return 1;
+		}
+	}
+	for (i = 0; i < MAXSTA; i++) {
+		sta_name[i] = (char *)malloc(14);
+		sta_code[i] = (char *)malloc(5);
+		sta_name[i][0] = '\0';
+		sta_code[i][0] = '\0';
+	}
+
+	/* Open and read station file */
+
+	if ((fpsta = fopen("/Users/antonio/Projects/ISS/stations/1960.stn", "r")) == NULL) {
+		fprintf(stderr, "Error in dat2isc: ");
+		fprintf(stderr, "cannot open output station file: %s\n",
+		"/Users/antonio/Projects/ISS/stations/1960.stn");
+		return 1;
+	}
+	i = 0;
+	while (fgets(line, MAXLINE, fpsta) != NULL) {
+		if (line[0] != '!') {
+			strncpy(sta_name[i], &line[16], 12);
+			sta_name[i][12] = '\0';
+			strncpy(sta_code[i], &line[59], 4);
+			sta_code[i][4] = '\0';
+			trim(sta_name[i]);
+			trim(sta_code[i]);
+			i++;
+		}
+	}
+	nsta = i;
+	/*
+	fprintf(stderr, "Number of station names in 1960.stn: %d\n", nsta);
+	*/
+	fclose(fpsta);
+
+	/* Open HEQ file */
+
+	if ((fpheq = fopen("HEQ", "w")) == NULL) {
+		fprintf(stderr, "Error in dat2isc: ");
+		fprintf(stderr, "cannot open output HEQ file\n");
+		return 1;
+	}
+
+	/* Open DAT file */
+
+	if ((fpisc = fopen("DAT", "w")) == NULL) {
+		fprintf(stderr, "Error in dat2isc: ");
+		fprintf(stderr, "cannot open output DAT file in ISC format\n");
+		return 1;
+	}
+
+	/* Allocate 96-byte cards */
+
+	for (i = 0; i < MAXCARDS; i++) {
+			;
+	}
+
+	neq = 0;
+	while (fgets(line, MAXLINE, fpdat) != NULL) {
+
+		/* read year from line header */
+		sscanf(line, "%2d%2d%2d%c%3d",
+		&yr, &mo, &dy, &ord, &lineno);
+
+		year = yr + 1900;
+
+		evno = ord - 'A' + 1;
+
+/*
+		fprintf(stderr, "%4d/%02d/%02d %2d %3d\n",
+		year, mo, dy, evno, lineno);
+*/
+
+		/* call to function to determine type of line:
+		* Possible code values:
+		0 or negative = error
+		1 = Origin, epicentre and depth
+		2 = First constant line (A=, B=, C=, ...)
+		3 = Second constant line (G=, H=, K=, HT=)
+		4 = Depth of focus or standard error line
+		5 = Standard error line or first station
+		> 5 = Phase card
+		*/
+
+		if (lineno == 1) {
+
+			/* write previous event (if any) */
+
+			if (icard > 0) {
+
+				/* write hypocenter card */
+
+				fprintf(fpisc,
+				"%2d%2d%4d%2d%2d%2d%2d%4d%2d%3d%c%7d%2d%8d%2d%4d%2d",
+				1, 5, year, month, day, hour, minute, second*100, 0, 0, 'A',
+				NINT(lat*10000), -2, NINT(lon*10000), -2, NINT(depth*10), 0);
+				fprintf(fpisc, "        99         99");
+				fprintf(fpisc, "%4d%3d%4d%4d%2d       \n",
+				igreg, isreg, nobs, NINT(se*100), -2);
+
+				/* write phase cards */
+
+				for (i = 1; i < icard; i++) {
+					fprintf(fpisc, "%s", card[i]);
+				}
+				/* inpr has to be changed to 1 for last phase card */
+				card[icard][2] = ' ';
+				card[icard][3] = '1';
+				fprintf(fpisc, "%s", card[icard]);
+
+				/* write to HEQ file */
+
+				iscdepth = depth;
+				if (depth == 0.0) depth = 35.0;
+				ndep = 0;
+
+				fprintf(fpheq,
+				" HEQ  %2d %2d %2d  %2d %2d %5.2f  %7.3f%8.3f %5.1f %3.1f%2d%3d%5.1f%3d%3d\n",
+				year-1900, month, day, hour, minute, (float)second,
+				lat, lon, depth, mag, imag,
+				ntel,iscdepth,igreg,ndep);
+			}
+
+
+			if (neq) {
+				;
+			}
+
+			/* start processing this event */
+
+			if (strstr(line, "EPICENTRE") == (char *)NULL) {
+				fprintf(stderr, "Error processing hypocenter line:\n");
+				fprintf(stderr, "%s", line);
+				return 1;
+			}
+			get_hypo(&line[11], &month, &day, &hour,
+			&minute, &second, &lat, &lon, &depth);
+			if (month != mo || day != dy) {
+				fprintf(stderr, "Error in hypocenter date:\n");
+				fprintf(stderr, "%s", line);
+				return 1;
+			}
+
+			OriginTime.year = year;
+			OriginTime.month = month;
+			OriginTime.day = day;
+			OriginTime.hour = hour;
+			OriginTime.minute = minute;
+			OriginTime.second = second;
+			OriginTime.millisecond = 0;
+
+			igreg = isreg = 0;
+			/*
+			lookup_(&lat, " ", &lon, " ", &igreg, &isreg);
+			fprintf(stderr, "IGREG = %3d, ISREG = %3d\n", igreg, isreg);
+			*/
+
+			/* initialize variables and arrays for this event */
+
+			neq++;
+			nobs = 0;
+			icard = 0;
+
+			strncpy(evname, line, 7);
+			evname[7] = '\0';
+
+			header = TRUE;
+			rdepth = FLT_UNDEF;
+			se = FLT_UNDEF;
+
+/*
+			fprintf(stderr, "%4d/%02d/%02d %02d:%02d:%02d %6.2f %7.2f %3.0f\n",
+			year, month, day, hour, minute, second, lat, lon, depth);
+*/
+
+		}
+
+		/* Ignore lineno = 2 and lineno = 3 */
+
+		if (header) {	/* read standard error from line 4 or 5 */
+			if (lineno <= 5) {
+				if (strstr(line, "SE=") != (char *)NULL) {
+					sscanf(line, "%*s%*s%f", &se);
+					/*fprintf(stderr, "%s SE=%6.2f\n", line, se);*/
+					header = FALSE;
+				}
+			} else {
+				fprintf(stderr, "dat2isc: ");
+				fprintf(stderr, "standard error not found for event %s\n", evname);
+				return 1;
+			}
+		} else {	/* read phase card */
+
+			get_phases(&line[11], stnm, &delta, &azim, &Pmin, &Psec, &Pres, &Ppol,
+			&Smin, &Ssec, &Sres, &pPmin, &pPsec, &Suppmin, &Suppsec, Supp);
+
+			ips = 0;
+			if (Pmin != INT_UNDEF) {
+				ips++;
+				dt = Pmin*60 + Psec;
+				PhaseTime[ips]=iaddsec1(OriginTime, dt);
+				if (delta <= 105.0) {
+					op_id[ips] = 0;
+					strcpy(phase[ips], "P");	
+				} else if (delta > 105.0 && delta < 110.0) {
+					if (Pres == 777) {
+						op_id[ips] = 85;
+						strcpy(phase[ips], "Pdiff");	
+					} else {
+						op_id[ips] = 4;
+						strcpy(phase[ips], "PKP");	
+					}
+				} else {
+					op_id[ips] = 4;
+					strcpy(phase[ips], "PKP");	
+				}
+				res[ips] = 10 * Pres;
+				if (Pres == 777) res[ips] = 9999;
+				if (res[ips] > 9999) res[ips] = 9999;
+				if (res[ips] < -999) res[ips] = -999;
+				if (Ppol == 'K') {
+					pol[ips] = 'D';
+				} else if (Ppol == 'A') {
+					pol[ips] = 'C';
+				} else if (Ppol == ' ') {
+					pol[ips] = Ppol;
+				} else {
+					fprintf(stderr, "Error: invalid polarity code: %c\n%s\n",
+					Ppol, line);
+					pol[ips] = ' ';
+					return 1;
+				}
+			}
+			if (Smin != INT_UNDEF) {
+				ips++;
+				dt = Smin*60 + Ssec;
+				PhaseTime[ips] = iaddsec1(OriginTime, dt);
+				if (delta <= 95.0) {
+					op_id[ips] = 35;
+					strcpy(phase[ips], "S");	
+				} else {
+					op_id[ips] = 39;
+					strcpy(phase[ips], "SKS");	
+				}
+				res[ips] = 10 * Sres;
+				if (res[ips] > 9999) res[ips] = 9999;
+				if (res[ips] < -999) res[ips] = -999;
+				pol[ips] = ' ';
+			}
+			if (pPmin != INT_UNDEF) {
+				ips++;
+				dt = pPmin*60 + pPsec;
+				PhaseTime[ips] = iaddsec1(OriginTime, dt);
+				if (delta <= 105.0) {
+					op_id[ips] = 60;
+					strcpy(phase[ips], "pP");	
+				} else if (delta > 105.0 && delta < 110.0) {
+					if (Pres == 777) {
+/*
+						fprintf(stderr, "Possible pPdiff: %s\n", line);
+						op_id[ips] = ??;
+						strcpy(phase[ips], "pPdiff");	
+*/
+					}
+					op_id[ips] = 59;
+					strcpy(phase[ips], "pPKP");	
+				} else {
+					op_id[ips] = 59;
+					strcpy(phase[ips], "pPKP");	
+				}
+				res[ips] = 9999;
+				pol[ips] = ' ';
+			}
+			if (Suppmin != INT_UNDEF) {
+				ips++;
+				dt = Suppmin*60 + Suppsec;
+				PhaseTime[ips] = iaddsec1(OriginTime, dt);
+				asterisk(Supp);
+				op_id[ips] = phase_code2(Supp);
+/*
+				if (op_id[ips] != 999) 
+					fprintf(stderr, "%s %d\n", Supp, op_id[ips]);
+*/
+				strcpy(phase[ips], Supp);
+				res[ips] = 9999;
+				pol[ips] = ' ';
+			}
+
+			if (ips) {
+
+			/* find station code for stnm */
+			/* function: pass a name and date -> returns a 4 character code (csta) */
+
+			csta[0] = '\0';
+			trim(stnm);
+			for (ist = 0; ist < nsta; ist++) {
+				if (strcmp(stnm, sta_name[ist]) == 0) {
+					strcpy(csta, sta_code[ist]);
+					break;
+				}
+			}
+			if (strlen(csta) < 3) {
+				fprintf(stderr, "Error finding station code for: %s\n", stnm);
+				strcpy(csta, "????");
+			}
+
+			/* write phase cards (record formats 5 or 6) */
+
+			inrf = 5;
+			i = 1;
+			do {
+				if (strlen(csta) < 3) break;
+				icard++;	/* increment card number for this event */
+				irf = inrf;
+				if (i < ips)
+					inrf = 6;
+				else {
+					if (lcomments) inrf = 7;
+					else inrf = 5;
+				}
+/*
+				fprintf(stderr, "%2d%2d%4d%2d", irf, inrf, year, month);
+				if (irf == 5) {
+					fprintf(stderr,
+					"%-4s        %3d%5d%3d%2d%2d%2d%4d%2d%3d%-8s%4d%3d%4d%c",
+					csta, NINT(azim), NINT(delta*100.0),ips,
+					PhaseTime[i].day,PhaseTime[i].hour,
+					PhaseTime[i].minute, NINT(PhaseTime[i].second*100.0), 0,
+					op_id[i], phase[i], 9999, op_id[i], res[i], pol[i]);
+				} else if (irf == 6) {
+					fprintf(stderr, "%2d%2d%2d%2d%4d%2d%3d%-8s%4d%3d%4d%c", i,
+					PhaseTime[i].day,PhaseTime[i].hour,
+					PhaseTime[i].minute, NINT(PhaseTime[i].second*100.0), 0,
+					op_id[i], phase[i], 9999, op_id[i], res[i], pol[i]);
+				}
+				fprintf(stderr, "       99      99    99     \n");
+*/
+				sprintf(card[icard], "%2d%2d%4d%2d", irf, inrf, year, month);
+				if (irf == 5) {
+					sprintf(&card[icard][10],
+					"%-4s        %3d%5d%3d%2d%2d%2d%4d%2d%3d%-8s%4d%3d%4d%c",
+					csta, NINT(azim), NINT(delta*100.0),ips,
+					PhaseTime[i].day,PhaseTime[i].hour,
+					PhaseTime[i].minute, NINT(PhaseTime[i].second*100.0), 0,
+					op_id[i], phase[i], 9999, op_id[i], res[i], pol[i]);
+					sprintf(&card[icard][68], "       99      99    99     \n");
+				} else if (irf == 6) {
+					sprintf(&card[icard][10], "%2d%2d%2d%2d%4d%2d%3d%-8s%4d%3d%4d%c", i,
+					PhaseTime[i].day,PhaseTime[i].hour,
+					PhaseTime[i].minute, NINT(PhaseTime[i].second*100.0), 0,
+					op_id[i], phase[i], 9999, op_id[i], res[i], pol[i]);
+					sprintf(&card[icard][47],
+					"       99      99    99                          \n");
+				}
+				i++;
+			} while (i <= ips);
+
+			if (lcomments) {
+				sprintf(card[++icard], "%2d%2d%4d%2d%2d%-84s\n",7, 5, year, month, 1, stnm);
+			}
+
+			nobs++;
+
+			} else {
+				fprintf(stderr, "WARNING: no phases for this card:\n%s\n", line);
+			}
+
+		}
+	}
+
+	/* write last event */
+	if (icard > 0) {
+
+		/* write hypocenter card */
+
+		fprintf(fpisc,
+		"%2d%2d%4d%2d%2d%2d%2d%4d%2d%3d%c%7d%2d%8d%2d%4d%2d",
+		1, 5, year, month, day, hour, minute, second*100, 0, 0, 'A',
+		NINT(lat*10000), -2, NINT(lon*10000), -2, NINT(depth*10), 0);
+		fprintf(fpisc, "        99         99");
+		fprintf(fpisc, "%4d%3d%4d%4d%2d       \n",
+		igreg, isreg, nobs, NINT(se*100), -2);
+
+		/* write phase cards */
+
+		for (i = 1; i < icard; i++) {
+			fprintf(fpisc, "%s", card[i]);
+		}
+		/* inpr has to be changed to -1 for last phase card in file */
+		card[icard][2] = '-';
+		card[icard][3] = '1';
+		fprintf(fpisc, "%s", card[icard]);
+
+		/* write to HEQ file */
+
+		iscdepth = depth;
+		if (depth == 0.0) depth = 35.0;
+		ndep = 0;
+
+		fprintf(fpheq,
+		" HEQ  %2d %2d %2d  %2d %2d %5.2f  %7.3f%8.3f %5.1f %3.1f%2d%3d%5.1f%3d%3d\n",
+		year-1900, month, day, hour, minute, (float)second,
+		lat, lon, depth, mag, imag,
+		ntel,iscdepth,igreg,ndep);
+	}
+
+	fclose(fpdat);
+	fclose(fpheq);
+	fclose(fpisc);
+
+	return 0;
+}

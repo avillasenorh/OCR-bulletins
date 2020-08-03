@@ -1,0 +1,8 @@
+
+- 1957-1963 txt files (output from OCR) -> "clean" ISS 1957-1963 txt files
+- pre-1957 txt files (output from OCR) -> "clean" ISS pre-1957 txt files
+
+- txt files (entire ISS period) -> ISC 96-byte format
+
+- issall.dat -> ISC 96-byte format
+- 196[0123].dat -> ISC 96-byte format
